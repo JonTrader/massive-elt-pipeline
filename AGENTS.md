@@ -19,7 +19,7 @@ Daily US equity bars: one Massive grouped request per market date lands as Parqu
 
 There is no `src/`, `lib/`, or `utils/`. Search the packages above before adding a function. `extract/__init__.py` is empty; keep it empty. Do not add `load/__init__.py` or other package inits.
 
-Follow `plans/00-roadmap.md` and the active phase note for what to implement next. Do not implement later phases while that note is the current step. Procedure detail for extract, load, and dbt stays in `plans/01-extract.md`, `plans/02-raw-load.md`, and `plans/03-dbt-transform.md` - do not weaken those contracts in code.
+Follow `plans/00-roadmap.md` and the active phase note for what to implement next. Do not implement later phases while that note is the current step. Procedure detail for extract, load, dbt, and Airflow stays in `plans/01-extract.md`, `plans/02-raw-load.md`, `plans/03-dbt-transform.md`, and `plans/04-airflow.md` - do not weaken those contracts in code.
 
 ## Build and test commands
 

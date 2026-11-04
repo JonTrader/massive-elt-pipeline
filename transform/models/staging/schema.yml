@@ -64,3 +64,130 @@ models:
         description: Session date from the loader when present.
       - name: close
         description: Close price; may be null.
+
+unit_tests:
+  - name: stg_daily_bars_accepts_only_the_clean_row
+    description: >
+      One RAW row passes quality. Null ticker, null open, high, low, close,
+      or volume, high below low, and negative volume stay out. The passing
+      row uses the staging names and casts.
+    model: stg_daily_bars
+    given:
+      - input: "source('raw', 'DAILY_BARS')"
+        format: sql
+        fixture: raw_daily_bars_quality
+    expect:
+      rows:
+        - ticker: AAPL
+          open: 8
+          high: 16
+          low: 4
+          close: 16
+          volume: 100
+          vwap: 10.5
+          window_start_epoch_ms: 1001
+          transactions: 40
+          trade_date: "2024-01-02"
+          extracted_at: "2024-01-02 21:00:00"
+
+  - name: stg_daily_bars_quarantine_accepts_only_failed_rows
+    description: >
+      The same RAW fixture as stg_daily_bars_accepts_only_the_clean_row.
+      Every failing row lands here, with the same names and casts, and the
+      clean row does not. The two tests together keep each fixture row in
+      exactly one model.
+    model: stg_daily_bars_quarantine
+    given:
+      - input: "source('raw', 'DAILY_BARS')"
+        format: sql
+        fixture: raw_daily_bars_quality
+    expect:
+      rows:
+        - ticker: null
+          open: 8
+          high: 10
+          low: 6
+          close: 9
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1002
+          transactions: 1
+          trade_date: "2024-01-03"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NULL_O
+          open: null
+          high: 10
+          low: 6
+          close: 9
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1003
+          transactions: 2
+          trade_date: "2024-01-04"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NULL_H
+          open: 8
+          high: null
+          low: 6
+          close: 9
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1004
+          transactions: 3
+          trade_date: "2024-01-05"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NULL_L
+          open: 8
+          high: 10
+          low: null
+          close: 9
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1005
+          transactions: 4
+          trade_date: "2024-01-08"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NULL_C
+          open: 8
+          high: 10
+          low: 6
+          close: null
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1006
+          transactions: 5
+          trade_date: "2024-01-09"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NULL_V
+          open: 8
+          high: 10
+          low: 6
+          close: 9
+          volume: null
+          vwap: 8
+          window_start_epoch_ms: 1007
+          transactions: 6
+          trade_date: "2024-01-10"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: BAD_HL
+          open: 8
+          high: 5
+          low: 9
+          close: 7
+          volume: 10
+          vwap: 8
+          window_start_epoch_ms: 1008
+          transactions: 7
+          trade_date: "2024-01-11"
+          extracted_at: "2024-01-02 21:00:00"
+        - ticker: NEG_V
+          open: 8
+          high: 10
+          low: 6
+          close: 9
+          volume: -1
+          vwap: 8
+          window_start_epoch_ms: 1009
+          transactions: 8
+          trade_date: "2024-01-12"
+          extracted_at: "2024-01-02 21:00:00"

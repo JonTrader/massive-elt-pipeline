@@ -1,0 +1,238 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # `pip install --group` requires pip >= 25.1.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install --group dev
+
+      - name: Ruff check
+        run: python -m ruff check
+
+      - name: Ruff format
+        run: python -m ruff format --check
+
+      - name: Pytest
+        run: python -m pytest
+
+  dbt-parse:
+    name: dbt-parse
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Dummy values. dbt parse renders env_var and does not connect.
+      SNOWFLAKE_ACCOUNT: ci-parse
+      SNOWFLAKE_USER: ci-parse
+      SNOWFLAKE_PRIVATE_KEY_PATH: /tmp/ci-parse-dummy.p8
+      SNOWFLAKE_WAREHOUSE: CI_PARSE
+      SNOWFLAKE_ROLE: CI_PARSE
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # Runtime only. dbt-core and dbt-snowflake are in requirements.txt.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: dbt deps
+        working-directory: transform
+        run: dbt deps --profiles-dir .
+
+      - name: dbt parse
+        working-directory: transform
+        run: dbt parse --profiles-dir .
+
+  airflow-dags:
+    name: airflow-dags
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build Airflow image
+        run: docker build -t massive-etl-airflow:ci .
+
+      # Mounts match docker-compose.yaml: repo at /opt/airflow/repo, dags at
+      # /opt/airflow/dags, PYTHONPATH so extract and load import. DagBag only
+      # imports the files; task bodies are not called, so no Snowflake key.
+      - name: Import DAGs
+        run: |
+          docker run --rm -i \
+            -v "${{ github.workspace }}:/opt/airflow/repo" \
+            -v "${{ github.workspace }}/dags:/opt/airflow/dags" \
+            -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
+            -e PYTHONPATH=/opt/airflow/repo \
+            massive-etl-airflow:ci \
+            python - <<'PY'
+          import sys
+
+          dags_folder = "/opt/airflow/dags"
+          # The dag processor parses with BundleDagBag, which puts the bundle
+          # path on sys.path. DagBag does not. Sibling imports (trade_dates)
+          # need that path.
+          if dags_folder not in sys.path:
+              sys.path.append(dags_folder)
+
+          from airflow.dag_processing.dagbag import DagBag
+
+          # Airflow 3.3 removed DagBag(include_examples=...). Example DAGs are
+          # separate bundles gated by core.load_examples, set false above.
+          expected = {
+              "daily_market_bars",
+              "backfill_market_bars",
+              "stack_health",
+          }
+          bag = DagBag(dag_folder=dags_folder)
+          failed = False
+          if bag.import_errors:
+              failed = True
+              for path, err in sorted(bag.import_errors.items()):
+                  print(f"IMPORT ERROR: {path}\n{err}", flush=True)
+          found = set(bag.dag_ids)
+          if found != expected:
+              failed = True
+              print(f"DAG ids {sorted(found)} != {sorted(expected)}", flush=True)
+          if failed:
+              raise SystemExit(1)
+          print("OK " + ", ".join(sorted(found)), flush=True)
+          PY
+
+  dbt-unit:
+    name: dbt-unit
+    # Parse does not connect. Unit tests do, so a broken project never wakes CI_WH.
+    needs: [dbt-parse]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Fork pull requests do not receive secrets. Skip there instead of failing
+    # on an empty key. Same-repo pull requests, pushes, and manual runs still run.
+    if: "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+    env:
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      # Empty when the key is unencrypted. profiles.yml defaults this to ''.
+      SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY_PASSPHRASE }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # Runtime only. dbt-core and dbt-snowflake are in requirements.txt.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # The PEM is an environment variable on this step only. The script writes
+      # it to a mode-600 file and does not print it. Later steps receive the path.
+      - name: Write Snowflake private key
+        shell: bash
+        env:
+          SNOWFLAKE_CI_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_CI_PRIVATE_KEY }}
+        run: |
+          missing=0
+          if [ -z "${SNOWFLAKE_ACCOUNT-}" ]; then
+            echo "Repository variable SNOWFLAKE_ACCOUNT is empty."
+            missing=1
+          fi
+          if [ -z "${SNOWFLAKE_USER-}" ]; then
+            echo "Repository variable SNOWFLAKE_USER is empty."
+            missing=1
+          fi
+          if [ -z "${SNOWFLAKE_WAREHOUSE-}" ]; then
+            echo "Repository variable SNOWFLAKE_WAREHOUSE is empty."
+            missing=1
+          fi
+          if [ -z "${SNOWFLAKE_ROLE-}" ]; then
+            echo "Repository variable SNOWFLAKE_ROLE is empty."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          if [ -z "${SNOWFLAKE_CI_PRIVATE_KEY-}" ]; then
+            echo "SNOWFLAKE_CI_PRIVATE_KEY is empty. Set the repository secret to the PEM in secrets/ci_snowflake.p8, including the BEGIN and END lines."
+            exit 1
+          fi
+          case "$SNOWFLAKE_CI_PRIVATE_KEY" in
+            *"BEGIN PRIVATE KEY"*|*"BEGIN ENCRYPTED PRIVATE KEY"*)
+              ;;
+            *)
+              echo "SNOWFLAKE_CI_PRIVATE_KEY has no PKCS#8 PEM header. Paste the whole secrets/ci_snowflake.p8 file, including the BEGIN and END lines."
+              exit 1
+              ;;
+          esac
+          key_path="$RUNNER_TEMP/snowflake.p8"
+          umask 077
+          printf '%s\n' "$SNOWFLAKE_CI_PRIVATE_KEY" | tr -d '\r' > "$key_path"
+          chmod 600 "$key_path"
+          if [ ! -s "$key_path" ]; then
+            echo "SNOWFLAKE_CI_PRIVATE_KEY produced an empty key file."
+            exit 1
+          fi
+          echo "SNOWFLAKE_PRIVATE_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+          echo "Wrote private key to $key_path with mode 600."
+
+      - name: dbt deps
+        working-directory: transform
+        run: dbt deps --profiles-dir .
+
+      # Unit tests only. This does not run dbt build.
+      - name: dbt unit tests
+        working-directory: transform
+        run: dbt test --select test_type:unit --profiles-dir .

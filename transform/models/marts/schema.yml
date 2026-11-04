@@ -132,3 +132,71 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "range >= 0"
+
+unit_tests:
+  - name: fact_daily_bar_performance_derives_session_measures
+    description: >
+      dollar_volume is close * volume. range is high - low. gap_pct,
+      pct_gain_loss, and dollar_change use the prior close within a ticker
+      and are null on that ticker's first loaded day. Open-based ratios are
+      null when open is 0. dollar_change_from_open still subtracts.
+    model: fact_daily_bar_performance
+    given:
+      - input: ref('fact_daily_bar')
+        rows:
+          - ticker: AAPL
+            trade_date: "2024-01-02"
+            open: 8
+            high: 16
+            low: 4
+            close: 16
+            volume: 100
+          - ticker: AAPL
+            trade_date: "2024-01-03"
+            open: 24
+            high: 48
+            low: 12
+            close: 36
+            volume: 50
+          - ticker: MSFT
+            trade_date: "2024-01-03"
+            open: 0
+            high: 4
+            low: 0
+            close: 2
+            volume: 10
+    expect:
+      rows:
+        - ticker: AAPL
+          trade_date: "2024-01-02"
+          dollar_volume: 1600
+          range: 12
+          gap_pct: null
+          pct_gain_loss: null
+          dollar_change: null
+          pct_from_open: 1
+          dollar_change_from_open: 8
+          pct_open_to_high: 1
+          pct_open_to_low: -0.5
+        - ticker: AAPL
+          trade_date: "2024-01-03"
+          dollar_volume: 1800
+          range: 36
+          gap_pct: 0.5
+          pct_gain_loss: 1.25
+          dollar_change: 20
+          pct_from_open: 0.5
+          dollar_change_from_open: 12
+          pct_open_to_high: 1
+          pct_open_to_low: -0.5
+        - ticker: MSFT
+          trade_date: "2024-01-03"
+          dollar_volume: 20
+          range: 4
+          gap_pct: null
+          pct_gain_loss: null
+          dollar_change: null
+          pct_from_open: null
+          dollar_change_from_open: 2
+          pct_open_to_high: null
+          pct_open_to_low: null

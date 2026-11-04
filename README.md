@@ -1,12 +1,10 @@
 # US Equity Daily Bars
 
-Daily US equity bars, archived and loaded into a medallion-style warehouse. One grouped request to the Massive API (formerly Polygon) returns every US listed stock for a session. Python writes that payload to S3 as Parquet plus a manifest. Snowflake RAW is the loaded copy. dbt builds silver (`STAGING`) and gold (`MARTS`). Airflow is planned to run extract, load, then `dbt build` the next morning.
+Daily US equity bars, archived and loaded into a medallion-style warehouse. One grouped request to the Massive API (formerly Polygon) returns every US listed stock for a session. Python writes that payload to S3 as Parquet plus a manifest. Snowflake RAW is the loaded copy. dbt builds silver (`STAGING`) and gold (`MARTS`). Local Airflow runs extract, load, then `dbt build` the next morning.
 
 The landing is the record of what the vendor returned. A later model can be rebuilt from it. A closed session is a zero-row file, which is a different fact from a date the job never ran.
 
 The grain is one row per ticker per trade date, unadjusted. OTC names are excluded.
-
-Phase status and the current step live in [plans/00-roadmap.md](plans/00-roadmap.md), not in this file.
 
 ## Architecture
 
@@ -84,7 +82,7 @@ Silver staging renames vendor columns, casts types, and sends failing rows (null
 | Amazon S3 | Bronze archive of the vendor payload and the manifest. |
 | Snowflake, snowflake-connector-python | Warehouse, key-pair auth, and the date-scoped `COPY`. |
 | dbt-snowflake | dbt Core against Snowflake; project under `transform/`. |
-| Apache Airflow | Planned schedule, retries, and backfill. |
+| Apache Airflow | Local Docker schedule, retries, and backfill (`dags/`). |
 | pytest, responses, moto | Hermetic tests. No live HTTP, S3, or Snowflake. |
 | Ruff | Lint and format. |
 
@@ -103,7 +101,7 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 - **`CASE_SENSITIVE`.** The file has both `T` and `t`. A case-insensitive match would collapse them. The RAW columns are quoted for the same reason.
 - **`trade_date` in SQL.** `MATCH_BY_COLUMN_NAME` cannot take a `SELECT`, so the `COPY` inserts `trade_date` as null and the same transaction sets `TO_DATE(TO_TIMESTAMP_NTZ("t", 3))`. `t` marks the 16:00 New York close, so its UTC calendar date is always the session date and no timezone shift is needed. The column stays nullable because a `NOT NULL` constraint would reject the `COPY`.
 - **Explicit `trade_date` parameter.** The DAG parameter defaults to the run's New York date minus one day. The same parameter is how a backfill or a manual run passes a date. `logical_date` follows the timetable, so it is the wrong clock for the market date.
-- **06:00 next morning.** The DAG is planned for 06:00 America/New_York, Tuesday through Saturday (`0 6 * * 2-6`). Tuesday loads Monday. Saturday loads Friday. End-of-day aggregates have settled by then. The after-hours session closes at 20:00. A holiday lands an empty partition. Retries cover a trading day the vendor has not published yet.
+- **06:00 next morning.** The daily DAG runs at 06:00 America/New_York, Tuesday through Saturday (`0 6 * * 2-6`). Tuesday loads Monday. Saturday loads Friday. End-of-day aggregates have settled by then. The after-hours session closes at 20:00. A holiday lands an empty partition. Retries cover a trading day the vendor has not published yet.
 - **Freshness on the audit table.** A closed day writes an audit row and no bar rows, so freshness on `DAILY_BARS` cannot see it. Freshness reads `DAILY_BARS_LOADS.extracted_at` and warns after about 3 days. A Monday holiday can still stretch the gap from Saturday 06:00 to Wednesday 06:00. That edge is accepted.
 - **Performance as a second fact.** Derived session measures live in `fact_daily_bar_performance`, not on a dim and not as extra columns on the bar fact. Same grain (ticker + trade_date); connection is shared `dim_ticker` and `dim_date`. `dollar_volume` is `close * volume`.
 - **Hermetic tests.** Extract tests stub HTTP with `responses` and S3 with `moto`. Load tests mock the Snowflake connector the same way. A green test run does not call Massive, AWS, or Snowflake.
@@ -112,9 +110,9 @@ Runtime pins are in `requirements.txt`. pytest, responses, moto, and Ruff are th
 
 **Built.** Extract and RAW load on `main`. `python -m extract.daily_bars YYYY-MM-DD` lands one market date on S3. `python -m load.copy_daily_bars YYYY-MM-DD` reloads that date into `MARKET.RAW`. Live trading-day and closed-day loads succeeded. Transform/dbt under `transform/` builds `STAGING` and `MARTS` (`dim_date`, `dim_ticker`, `fact_daily_bar`, `fact_daily_bar_performance`); live `dbt build` verified. From `transform/`: `dbt deps --profiles-dir .`, then `dbt build --profiles-dir .`.
 
-**Planned.** Airflow as a local Docker run that calls the same extract and load functions, then `dbt build`. Before that image is built, its supported Python and constraints file have to be checked against this repo's 3.14 environment.
+**Airflow (Built, local Docker).** Image `massive-etl-airflow:3.3.2-python3.14`. From the repo root with Docker Desktop running: `docker compose build`, then `docker compose up -d`. UI at `http://localhost:8080`. DAGs under `dags/` call the same extract, load, and `dbt build` as the CLI. Copy or symlink the Snowflake key to `secrets/snowflake.p8` before load/dbt tasks (compose mounts it read-only). Optional `AIRFLOW_UID=50000` in `.env` silences a compose warning on Windows.
 
-Reference data, splits, dividends, adjusted and total-return series, minute bars, trades, quotes, websockets, and hosted orchestration are later work. This repository is the daily path.
+**Planned.** Hosted orchestration, reference data / enrichment, splits, dividends, adjusted and total-return series, minute bars, trades, quotes, and websockets are later work. This repository is the daily path.
 
 ## Analyst queries (`MARKET.MARTS`)
 
@@ -160,9 +158,12 @@ extract/config.py              environment
 load/copy_daily_bars.py        date-scoped Snowflake reload
 snowflake/bootstrap.sql        RAW tables, integration, stage
 transform/                     dbt project (silver/gold)
+dags/                          Airflow daily and backfill DAGs
+Dockerfile                     local Airflow image
+docker-compose.yaml            local Airflow stack
 tests/test_daily_bars.py       hermetic extract tests
 tests/test_copy_daily_bars.py  hermetic load tests
-plans/                         roadmap, phase notes, decision log
+docs/agents/                   agent guides linked from AGENTS.md
 requirements.txt               runtime pins
 pyproject.toml                 dev group, Ruff, pytest
 .env.example                   variable names, no secrets

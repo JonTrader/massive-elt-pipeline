@@ -1,0 +1,14 @@
+.venv/
+.git/
+.env
+logs/
+plans/
+secrets/
+transform/target/
+transform/dbt_packages/
+transform/logs/
+**/__pycache__/
+*.py[cod]
+*.parquet
+*.p8
+*.pem

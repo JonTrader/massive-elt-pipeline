@@ -6,6 +6,10 @@ __pycache__/
 *.p8
 *.pem
 plans/
+logs/
+secrets/
+config/airflow.cfg
+dags/__pycache__/
 transform/target/
 transform/dbt_packages/
 transform/logs/

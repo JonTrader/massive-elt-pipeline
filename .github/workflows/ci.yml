@@ -47,3 +47,41 @@ jobs:
 
       - name: Pytest
         run: python -m pytest
+
+  dbt-parse:
+    name: dbt-parse
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Dummy values. dbt parse renders env_var and does not connect.
+      SNOWFLAKE_ACCOUNT: ci-parse
+      SNOWFLAKE_USER: ci-parse
+      SNOWFLAKE_PRIVATE_KEY_PATH: /tmp/ci-parse-dummy.p8
+      SNOWFLAKE_WAREHOUSE: CI_PARSE
+      SNOWFLAKE_ROLE: CI_PARSE
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
+
+      # Runtime only. dbt-core and dbt-snowflake are in requirements.txt.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: dbt deps
+        working-directory: transform
+        run: dbt deps --profiles-dir .
+
+      - name: dbt parse
+        working-directory: transform
+        run: dbt parse --profiles-dir .

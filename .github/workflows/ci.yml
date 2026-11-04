@@ -85,3 +85,60 @@ jobs:
       - name: dbt parse
         working-directory: transform
         run: dbt parse --profiles-dir .
+
+  airflow-dags:
+    name: airflow-dags
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build Airflow image
+        run: docker build -t massive-etl-airflow:ci .
+
+      # Mounts match docker-compose.yaml: repo at /opt/airflow/repo, dags at
+      # /opt/airflow/dags, PYTHONPATH so extract and load import. DagBag only
+      # imports the files; task bodies are not called, so no Snowflake key.
+      - name: Import DAGs
+        run: |
+          docker run --rm -i \
+            -v "${{ github.workspace }}:/opt/airflow/repo" \
+            -v "${{ github.workspace }}/dags:/opt/airflow/dags" \
+            -e AIRFLOW__CORE__LOAD_EXAMPLES=false \
+            -e PYTHONPATH=/opt/airflow/repo \
+            massive-etl-airflow:ci \
+            python - <<'PY'
+          import sys
+
+          dags_folder = "/opt/airflow/dags"
+          # The dag processor parses with BundleDagBag, which puts the bundle
+          # path on sys.path. DagBag does not. Sibling imports (trade_dates)
+          # need that path.
+          if dags_folder not in sys.path:
+              sys.path.append(dags_folder)
+
+          from airflow.dag_processing.dagbag import DagBag
+
+          # Airflow 3.3 removed DagBag(include_examples=...). Example DAGs are
+          # separate bundles gated by core.load_examples, set false above.
+          expected = {
+              "daily_market_bars",
+              "backfill_market_bars",
+              "stack_health",
+          }
+          bag = DagBag(dag_folder=dags_folder)
+          failed = False
+          if bag.import_errors:
+              failed = True
+              for path, err in sorted(bag.import_errors.items()):
+                  print(f"IMPORT ERROR: {path}\n{err}", flush=True)
+          found = set(bag.dag_ids)
+          if found != expected:
+              failed = True
+              print(f"DAG ids {sorted(found)} != {sorted(expected)}", flush=True)
+          if failed:
+              raise SystemExit(1)
+          print("OK " + ", ".join(sorted(found)), flush=True)
+          PY

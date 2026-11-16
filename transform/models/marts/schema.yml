@@ -34,8 +34,8 @@ models:
 
   - name: fact_daily_bar
     description: >
-      Unadjusted daily bars at grain ticker + trade_date. Measures from silver;
-      window_start_epoch_ms omitted from gold.
+      Unadjusted daily bars at grain ticker + trade_date, including derived
+      session measures. window_start_epoch_ms omitted from gold.
     columns:
       - name: ticker
         description: Symbol; FK to dim_ticker.
@@ -67,6 +67,24 @@ models:
         description: Volume-weighted average price.
       - name: transactions
         description: Transaction count.
+      - name: dollar_volume
+        description: close * volume.
+      - name: range
+        description: high - low.
+      - name: gap_pct
+        description: (open - prior_close) / prior_close.
+      - name: pct_gain_loss
+        description: (close - prior_close) / prior_close.
+      - name: pct_from_open
+        description: (close - open) / open.
+      - name: dollar_change
+        description: close - prior_close.
+      - name: dollar_change_from_open
+        description: close - open.
+      - name: pct_open_to_high
+        description: (high - open) / open.
+      - name: pct_open_to_low
+        description: (low - open) / open.
       - name: extracted_at
         description: Parquet S3 last-modified (UTC) from silver.
     tests:
@@ -81,68 +99,21 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "volume >= 0"
-
-  - name: fact_daily_bar_performance
-    description: >
-      Derived daily performance at grain ticker + trade_date. Same keys as
-      fact_daily_bar; connected through shared dim_ticker and dim_date.
-      dollar_volume is close * volume. Prior-close measures are null on the
-      first loaded day per ticker.
-    columns:
-      - name: ticker
-        description: Symbol; FK to dim_ticker.
-        tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('dim_ticker')
-                field: ticker
-      - name: trade_date
-        description: Session date; FK to dim_date.
-        tests:
-          - not_null
-          - relationships:
-              arguments:
-                to: ref('dim_date')
-                field: date_day
-      - name: dollar_volume
-        description: close * volume.
-      - name: range
-        description: high - low.
-      - name: gap_pct
-        description: (open - prior_close) / prior_close.
-      - name: pct_gain_loss
-        description: (close - prior_close) / prior_close.
-      - name: pct_from_open
-        description: (close - open) / open.
-      - name: dollar_change_from_open
-        description: close - open.
-      - name: dollar_change
-        description: close - prior_close.
-      - name: pct_open_to_high
-        description: (high - open) / open.
-      - name: pct_open_to_low
-        description: (low - open) / open.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns:
-              - ticker
-              - trade_date
       - dbt_utils.expression_is_true:
           arguments:
             expression: "range >= 0"
 
 unit_tests:
-  - name: fact_daily_bar_performance_derives_session_measures
+  - name: fact_daily_bar_derives_session_measures
     description: >
-      dollar_volume is close * volume. range is high - low. gap_pct,
-      pct_gain_loss, and dollar_change use the prior close within a ticker
-      and are null on that ticker's first loaded day. Open-based ratios are
-      null when open is 0. dollar_change_from_open still subtracts.
-    model: fact_daily_bar_performance
+      Session measures on fact_daily_bar. dollar_volume is close * volume.
+      range is high - low. gap_pct, pct_gain_loss, and dollar_change use the
+      prior close within a ticker and are null on that ticker's first loaded
+      day. Open-based ratios are null when open is 0. dollar_change_from_open
+      still subtracts.
+    model: fact_daily_bar
     given:
-      - input: ref('fact_daily_bar')
+      - input: ref('stg_daily_bars')
         rows:
           - ticker: AAPL
             trade_date: "2024-01-02"
@@ -151,6 +122,9 @@ unit_tests:
             low: 4
             close: 16
             volume: 100
+            vwap: 10
+            transactions: 40
+            extracted_at: "2024-01-02 21:00:00"
           - ticker: AAPL
             trade_date: "2024-01-03"
             open: 24
@@ -158,6 +132,9 @@ unit_tests:
             low: 12
             close: 36
             volume: 50
+            vwap: 30
+            transactions: 20
+            extracted_at: "2024-01-03 21:00:00"
           - ticker: MSFT
             trade_date: "2024-01-03"
             open: 0
@@ -165,38 +142,65 @@ unit_tests:
             low: 0
             close: 2
             volume: 10
+            vwap: 1
+            transactions: 5
+            extracted_at: "2024-01-03 21:00:00"
     expect:
       rows:
         - ticker: AAPL
           trade_date: "2024-01-02"
+          open: 8
+          high: 16
+          low: 4
+          close: 16
+          volume: 100
+          vwap: 10
+          transactions: 40
           dollar_volume: 1600
           range: 12
           gap_pct: null
           pct_gain_loss: null
-          dollar_change: null
           pct_from_open: 1
+          dollar_change: null
           dollar_change_from_open: 8
           pct_open_to_high: 1
           pct_open_to_low: -0.5
+          extracted_at: "2024-01-02 21:00:00"
         - ticker: AAPL
           trade_date: "2024-01-03"
+          open: 24
+          high: 48
+          low: 12
+          close: 36
+          volume: 50
+          vwap: 30
+          transactions: 20
           dollar_volume: 1800
           range: 36
           gap_pct: 0.5
           pct_gain_loss: 1.25
-          dollar_change: 20
           pct_from_open: 0.5
+          dollar_change: 20
           dollar_change_from_open: 12
           pct_open_to_high: 1
           pct_open_to_low: -0.5
+          extracted_at: "2024-01-03 21:00:00"
         - ticker: MSFT
           trade_date: "2024-01-03"
+          open: 0
+          high: 4
+          low: 0
+          close: 2
+          volume: 10
+          vwap: 1
+          transactions: 5
           dollar_volume: 20
           range: 4
           gap_pct: null
           pct_gain_loss: null
-          dollar_change: null
           pct_from_open: null
+          dollar_change: null
           dollar_change_from_open: 2
           pct_open_to_high: null
           pct_open_to_low: null
+          extracted_at: "2024-01-03 21:00:00"

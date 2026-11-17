@@ -13,5 +13,5 @@ Code must not weaken these.
 
 - Do not dedupe silver by `extracted_at`. Delete-then-copy leaves one landing per date; uniqueness tests catch a broken load.
 - `generate_schema_name` returns the custom schema as-is, so `STAGING` and `MARTS` are not concatenated onto the target schema.
-- Gold (`MARTS`) is a star: `dim_date`, `dim_ticker`, `fact_daily_bar`, and `fact_daily_bar_performance`. Performance is a second fact at the same grain, linked only through the shared dims; it is not a dim and not a bridge table.
+- Gold (`MARTS`) is a star: `dim_date`, `dim_ticker`, and one fact `fact_daily_bar`. Derived session measures (dollar volume, range, gap, returns, open-to-high/low) are columns on that fact, not a second fact and not on a dim.
 - `dollar_volume` is `close * volume`.
